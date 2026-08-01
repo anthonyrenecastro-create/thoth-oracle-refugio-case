@@ -18,16 +18,17 @@ describe('identity twin engine', () => {
     expect(baseline.bundle?.forensicActionPriorities[0]?.actionId).not.toEqual(hrm.bundle?.forensicActionPriorities[0]?.actionId);
   });
 
-  it('fails explicitly when live analysis is requested without a live Gemini run', async () => {
+  it('falls back to fixture output when live analysis is requested without a live Gemini run', async () => {
     const baseline = await runTwinADirectAnalysis({ caseRecord: REFUGIO_SYNTHETIC_FIXTURE, accessMode: 'public_analysis', settings: { fixtureMode: false } });
 
     expect(baseline.executionStatus.requestedMode).toBe('live');
-    expect(baseline.executionStatus.actualMode).toBe('failed');
+    expect(baseline.executionStatus.actualMode).toBe('fixture');
     expect(baseline.executionStatus.liveAttempted).toBe(true);
     expect(baseline.executionStatus.liveSucceeded).toBe(false);
-    expect(baseline.executionStatus.fallbackUsed).toBe(false);
-    expect(baseline.failureMessage).toContain('Live analysis could not be completed');
-    expect(baseline.bundle).toBeUndefined();
+    expect(baseline.executionStatus.fallbackAllowed).toBe(true);
+    expect(baseline.executionStatus.fallbackUsed).toBe(true);
+    expect(baseline.failureMessage).toContain('demonstration-mode conclusions were generated instead');
+    expect(baseline.bundle?.runMetadata.mode).toBe('fixture');
   });
 
   it('uses the submitted case state and changes when evidence changes', async () => {

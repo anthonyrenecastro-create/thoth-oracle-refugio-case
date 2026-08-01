@@ -2034,19 +2034,21 @@ export async function runTwinADirectAnalysis(input: TwinEngineInput): Promise<Id
   }
 
   if (!hasGeminiConfiguration()) {
+    const fallbackBundle = runTwinAFixtureOutcome(state, runId, startedAt);
     return {
       executionStatus: buildExecutionStatus({
         requestedMode,
-        actualMode: 'failed',
+        actualMode: 'fixture',
         liveAttempted: true,
         liveSucceeded: false,
-        fallbackAllowed: false,
-        fallbackUsed: false,
+        fallbackAllowed: true,
+        fallbackUsed: true,
         startedAt,
         failureCode: 'gemini_not_configured',
-        failureMessage: 'Live analysis could not be completed. No case conclusions were generated.',
+        failureMessage: 'Live analysis was unavailable; demonstration-mode conclusions were generated instead.',
       }),
-      failureMessage: 'Live analysis could not be completed. No case conclusions were generated.',
+      bundle: fallbackBundle,
+      failureMessage: 'Live analysis was unavailable; demonstration-mode conclusions were generated instead.',
     };
   }
 
@@ -2065,19 +2067,22 @@ export async function runTwinADirectAnalysis(input: TwinEngineInput): Promise<Id
       bundle,
     };
   } catch (error) {
+    const fallbackBundle = runTwinAFixtureOutcome(state, runId, startedAt);
+    const liveFailureMessage = error instanceof Error ? error.message : 'Live analysis could not be completed.';
     return {
       executionStatus: buildExecutionStatus({
         requestedMode,
-        actualMode: 'failed',
+        actualMode: 'fixture',
         liveAttempted: true,
         liveSucceeded: false,
-        fallbackAllowed: false,
-        fallbackUsed: false,
+        fallbackAllowed: true,
+        fallbackUsed: true,
         startedAt,
         failureCode: error instanceof Error ? error.name : 'live_analysis_failed',
-        failureMessage: 'Live analysis could not be completed. No case conclusions were generated.',
+        failureMessage: `${liveFailureMessage} Demonstration-mode conclusions were generated instead.`,
       }),
-      failureMessage: error instanceof Error ? error.message : 'Live analysis could not be completed. No case conclusions were generated.',
+      bundle: fallbackBundle,
+      failureMessage: `${liveFailureMessage} Demonstration-mode conclusions were generated instead.`,
     };
   }
 }
@@ -2123,19 +2128,21 @@ export async function runTwinBAnalysis(input: TwinEngineInput): Promise<Identity
   }
 
   if (!hasGeminiConfiguration()) {
+    const fallbackBundle = runHrmFixture(state, runId, startedAt);
     return {
       executionStatus: buildExecutionStatus({
         requestedMode,
-        actualMode: 'failed',
+        actualMode: 'fixture',
         liveAttempted: true,
         liveSucceeded: false,
-        fallbackAllowed: false,
-        fallbackUsed: false,
+        fallbackAllowed: true,
+        fallbackUsed: true,
         startedAt,
         failureCode: 'gemini_not_configured',
-        failureMessage: 'Live analysis could not be completed. No case conclusions were generated.',
+        failureMessage: 'Live analysis was unavailable; demonstration-mode conclusions were generated instead.',
       }),
-      failureMessage: 'Live analysis could not be completed. No case conclusions were generated.',
+      bundle: fallbackBundle,
+      failureMessage: 'Live analysis was unavailable; demonstration-mode conclusions were generated instead.',
     };
   }
 
@@ -2154,19 +2161,22 @@ export async function runTwinBAnalysis(input: TwinEngineInput): Promise<Identity
       bundle,
     };
   } catch (error) {
+    const fallbackBundle = runHrmFixture(state, runId, startedAt);
+    const liveFailureMessage = error instanceof Error ? error.message : 'Live analysis could not be completed.';
     return {
       executionStatus: buildExecutionStatus({
         requestedMode,
-        actualMode: 'failed',
+        actualMode: 'fixture',
         liveAttempted: true,
         liveSucceeded: false,
-        fallbackAllowed: false,
-        fallbackUsed: false,
+        fallbackAllowed: true,
+        fallbackUsed: true,
         startedAt,
         failureCode: error instanceof Error ? error.name : 'live_analysis_failed',
-        failureMessage: 'Live analysis could not be completed. No case conclusions were generated.',
+        failureMessage: `${liveFailureMessage} Demonstration-mode conclusions were generated instead.`,
       }),
-      failureMessage: error instanceof Error ? error.message : 'Live analysis could not be completed. No case conclusions were generated.',
+      bundle: fallbackBundle,
+      failureMessage: `${liveFailureMessage} Demonstration-mode conclusions were generated instead.`,
     };
   }
 }
