@@ -1,0 +1,7 @@
+{
+  "name": "Thoth ARC Twin Arena",
+  "description": "THOTH Forensic Oracle: Refugio Identity-First Case — decision support and candidate universe analysis for unidentified-person cold cases.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
+
