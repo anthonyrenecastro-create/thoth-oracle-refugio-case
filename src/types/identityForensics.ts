@@ -62,7 +62,7 @@ export interface InformationGainAssessment {
 
 export interface ResidualCandidateSetAssessment {
   preserved: true;
-  residualWeight: number;
+  residualWeight: number | null;
   uncertainty: [number, number];
   interpretation: 'comparative_analytical_weight_not_probability';
   reasons: string[];
@@ -220,7 +220,7 @@ export interface IdentitySearchProfile {
   title: string;
   profileClass?: SearchProfileClass;
   description: string;
-  analyticalWeight: number;
+  analyticalWeight: number | null;
   weightInterval: [number, number];
   supportingEvidenceIds: string[];
   contradictingEvidenceIds: string[];
@@ -228,8 +228,8 @@ export interface IdentitySearchProfile {
   requiredAssumptions: string[];
   recordsNeeded: string[];
   jurisdictionsToSearch: string[];
-  expectedInformationGain: 'very_high' | 'high' | 'moderate' | 'low';
-  internalInformationGainScore?: number;
+  expectedInformationGain: 'very_high' | 'high' | 'moderate' | 'low' | null;
+  internalInformationGainScore?: number | null;
   evidenceThatWouldWeakenProfile: string[];
   limitations: string[];
 }
@@ -251,7 +251,7 @@ export interface IdentityAction {
   category?: 'dna' | 'dental' | 'fingerprint' | 'anthropology' | 'isotope' | 'records' | 'clothing' | 'facial_reconstruction' | 'public_outreach';
   purpose: string;
   whyItMatters: string[];
-  expectedInformationGain: number;
+  expectedInformationGain: number | null;
   candidateDiscrimination: number;
   prerequisites: string[];
   availability: 'confirmed_available' | 'possibly_available' | 'unknown' | 'already_completed' | 'not_viable' | 'restricted_information';

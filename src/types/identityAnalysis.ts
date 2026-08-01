@@ -30,6 +30,135 @@ export interface IdentityAnalysisSettings {
   runLabel?: string;
 }
 
+export type AnalysisExecutionMode = 'live' | 'fixture' | 'failed';
+
+export interface AnalysisExecutionStatus {
+  requestedMode: 'live' | 'fixture';
+  actualMode: AnalysisExecutionMode;
+  liveAttempted: boolean;
+  liveSucceeded: boolean;
+  fallbackAllowed: boolean;
+  fallbackUsed: boolean;
+  failureCode?: string;
+  failureMessage?: string;
+  startedAt: string;
+  completedAt?: string;
+}
+
+export type FindingOrigin =
+  | 'seeded_fact'
+  | 'direct_restating'
+  | 'deterministic_rule_output'
+  | 'derived_observation'
+  | 'model_generated_hypothesis'
+  | 'independent_twin_convergence'
+  | 'investigator_confirmed_lead';
+
+export interface NoveltyAssessment {
+  findingId: string;
+  origin: FindingOrigin;
+  similarityToSeededContent: number;
+  similarityToPriorFindings: number;
+  addsNewRelationship: boolean;
+  addsNewTest: boolean;
+  changesPriority: boolean;
+  evidenceSupport: 'strong' | 'moderate' | 'weak';
+  testability: 'high' | 'moderate' | 'low';
+  acceptedAsNewFinding: boolean;
+  rejectionReason?: string;
+}
+
+export type ProposalConfidenceCategory = 'weak' | 'moderate' | 'strong' | 'blocked_by_missing_data';
+
+export interface SemanticProfileProposal {
+  proposalId: string;
+  statement: string;
+  evidenceIds: string[];
+  contradictingEvidenceIds: string[];
+  unknownEvidenceIds: string[];
+  assumptions: string[];
+  confidenceCategory: ProposalConfidenceCategory;
+  test: string;
+  whatWouldWeakenIt: string;
+  whatItCannotEstablish: string;
+}
+
+export interface SemanticCandidateProposal {
+  proposalId: string;
+  statement: string;
+  evidenceIds: string[];
+  contradictingEvidenceIds: string[];
+  unknownEvidenceIds: string[];
+  assumptions: string[];
+  confidenceCategory: ProposalConfidenceCategory;
+  test: string;
+  whatWouldWeakenIt: string;
+  whatItCannotEstablish: string;
+}
+
+export interface SemanticActionProposal {
+  proposalId: string;
+  statement: string;
+  evidenceIds: string[];
+  contradictingEvidenceIds: string[];
+  unknownEvidenceIds: string[];
+  assumptions: string[];
+  confidenceCategory: ProposalConfidenceCategory;
+  test: string;
+  whatWouldWeakenIt: string;
+  whatItCannotEstablish: string;
+}
+
+export interface SemanticInformationGapProposal {
+  proposalId: string;
+  statement: string;
+  evidenceIds: string[];
+  contradictingEvidenceIds: string[];
+  unknownEvidenceIds: string[];
+  assumptions: string[];
+  confidenceCategory: ProposalConfidenceCategory;
+  test: string;
+  whatWouldWeakenIt: string;
+  whatItCannotEstablish: string;
+}
+
+export interface SemanticContradictionProposal {
+  proposalId: string;
+  statement: string;
+  evidenceIds: string[];
+  contradictingEvidenceIds: string[];
+  unknownEvidenceIds: string[];
+  assumptions: string[];
+  confidenceCategory: ProposalConfidenceCategory;
+  test: string;
+  whatWouldWeakenIt: string;
+  whatItCannotEstablish: string;
+}
+
+export interface SemanticHypothesisProposal {
+  proposalId: string;
+  statement: string;
+  evidenceIds: string[];
+  contradictingEvidenceIds: string[];
+  unknownEvidenceIds: string[];
+  assumptions: string[];
+  confidenceCategory: ProposalConfidenceCategory;
+  test: string;
+  whatWouldWeakenIt: string;
+  whatItCannotEstablish: string;
+}
+
+export interface SemanticProposalBundle {
+  proposedProfiles: SemanticProfileProposal[];
+  proposedCandidateAssessments: SemanticCandidateProposal[];
+  proposedActions: SemanticActionProposal[];
+  proposedInformationGaps: SemanticInformationGapProposal[];
+  proposedContradictions: SemanticContradictionProposal[];
+  proposedHypotheses: SemanticHypothesisProposal[];
+  rejectedUnsupportedIdeas: string[];
+  limitations: string[];
+}
+
 export interface EvidenceDependencyAudit {
   evidenceId: string;
   independenceGroup: string;
@@ -62,6 +191,8 @@ export interface AnalyticalHypothesis {
   }>;
   fragility: 'low' | 'moderate' | 'high';
   status: 'viable' | 'weak' | 'unsupported' | 'blocked_by_missing_data';
+  origin?: FindingOrigin;
+  noveltyAssessment?: NoveltyAssessment;
 }
 
 export interface ContradictionFinding {
@@ -286,6 +417,7 @@ export interface IdentityTwinResult {
   recommendedNextAction: IdentityRecommendedAction;
   limitations: string[];
   humanReviewRequired: true;
+  semanticProposalBundle?: SemanticProposalBundle;
   staleness?: {
     current: boolean;
     reason: string;
@@ -325,6 +457,12 @@ export interface IdentityTwinRunBundle {
   mode: 'live' | 'fixture';
 }
 
+export interface IdentityTwinRunResponse {
+  executionStatus: AnalysisExecutionStatus;
+  bundle?: IdentityTwinRunBundle;
+  failureMessage?: string;
+}
+
 export interface IdentityAnalysisState {
   caseRecord: IdentityCase;
   accessMode: AccessMode;
@@ -352,17 +490,28 @@ export interface IdentityAnalysisState {
 export interface InvestigatorFindingFeedback {
   findingId: string;
   reviewerRole: string;
+  reviewedAt?: string;
   alreadyKnown: boolean;
-  factualAccuracy: 'accurate' | 'partially_accurate' | 'inaccurate' | 'unknown';
-  changedPriority: boolean;
-  operationalValue: 'none' | 'low' | 'moderate' | 'high';
-  outcome:
+  factualAccuracy?: 'accurate' | 'partially_accurate' | 'inaccurate' | 'unknown';
+  changedPriority?: boolean;
+  operationalValue?: 'none' | 'low' | 'moderate' | 'high';
+  outcome?:
     | 'no_action'
     | 'records_requested'
     | 'candidate_compared'
     | 'candidate_excluded'
     | 'new_candidate_found'
     | 'forensic_test_requested'
+    | 'other';
+  accuracy?: 'accurate' | 'partially_accurate' | 'inaccurate' | 'unknown';
+  usefulness?: 'none' | 'low' | 'moderate' | 'high';
+  actionTaken?:
+    | 'none'
+    | 'records_requested'
+    | 'forensic_review_requested'
+    | 'candidate_compared'
+    | 'candidate_excluded'
+    | 'new_candidate_found'
     | 'other';
   notes: string;
 }

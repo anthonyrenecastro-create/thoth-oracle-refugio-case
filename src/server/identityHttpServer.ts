@@ -6,8 +6,8 @@ import Ajv from 'ajv';
 import addFormats from 'ajv-formats';
 import { REFUGIO_CASE, type IdentityCase } from '../data/refugioCase';
 import type { AccessMode } from '../types/identityForensics';
-import type { IdentityAnalysisSettings, IdentityTwinResult } from '../types/identityAnalysis';
-import { runBaselineIdentityTwin, runHrmIdentityTwin, runTwinBundle, compareTwinResults } from './identityTwinEngine';
+import type { IdentityAnalysisSettings, IdentityTwinResult, IdentityTwinRunBundle, IdentityTwinRunResponse } from '../types/identityAnalysis';
+import { runTwinADirectAnalysis, runTwinBAnalysis, runTwinBundle, compareTwinResults } from './identityTwinEngine';
 
 const PORT = 3000;
 
@@ -51,7 +51,7 @@ const identityPayloadSchema = {
 const validateIdentityPayload = ajv.compile(identityPayloadSchema);
 
 type StoredRun = {
-  payload: IdentityTwinResult | Awaited<ReturnType<typeof runTwinBundle>> | Record<string, unknown>;
+  payload: IdentityTwinResult | IdentityTwinRunBundle | Record<string, unknown>;
   caseId: string;
   caseStateHash: string;
 };
@@ -86,6 +86,13 @@ function normalizeSettings(settings?: { fixtureMode?: boolean } | null): Identit
 
 function isTwinResult(payload: StoredRun['payload']): payload is IdentityTwinResult {
   return Boolean((payload as IdentityTwinResult).runMetadata?.runId && (payload as IdentityTwinResult).analysisSnapshot);
+}
+
+function buildFailureResponse(errorMessage: string, executionStatus: IdentityTwinRunResponse['executionStatus']): IdentityTwinRunResponse {
+  return {
+    executionStatus,
+    failureMessage: errorMessage,
+  };
 }
 
 function markStaleness(payload: StoredRun['payload'], caseId: string, caseStateHash: string) {
@@ -203,12 +210,33 @@ export function createIdentityServer() {
     const settings = normalizeSettings(payload.settings);
 
     try {
-      const result = await runBaselineIdentityTwin({ caseRecord, accessMode: payload.accessMode ?? 'public_analysis', settings });
-      storeRun(result.runMetadata.runId, caseRecord, result);
-      return res.json(markStaleness(result, caseRecord.id, result.analysisSnapshot.caseStateHash));
+      const outcome = await runTwinADirectAnalysis({ caseRecord, accessMode: payload.accessMode ?? 'public_analysis', settings });
+      if (!outcome.bundle) {
+        return res.status(200).json(buildFailureResponse(
+          outcome.failureMessage ?? 'Live analysis could not be completed. No case conclusions were generated.',
+          outcome.executionStatus,
+        ));
+      }
+
+      storeRun(outcome.bundle.runMetadata.runId, caseRecord, outcome.bundle);
+      return res.json({
+        executionStatus: outcome.executionStatus,
+        bundle: markStaleness(outcome.bundle, caseRecord.id, outcome.bundle.runMetadata.caseStateHash),
+      });
     } catch (error) {
       logger.error({ error }, 'identity run-baseline failed');
-      return res.status(500).json({ error: 'Baseline twin execution failed.' });
+      return res.status(500).json(buildFailureResponse('Live analysis could not be completed. No case conclusions were generated.', {
+        requestedMode: settings.fixtureMode ? 'fixture' : 'live',
+        actualMode: 'failed',
+        liveAttempted: !settings.fixtureMode,
+        liveSucceeded: false,
+        fallbackAllowed: settings.fixtureMode,
+        fallbackUsed: false,
+        failureCode: error instanceof Error ? error.name : 'baseline_failed',
+        failureMessage: error instanceof Error ? error.message : 'Live analysis could not be completed. No case conclusions were generated.',
+        startedAt: new Date().toISOString(),
+        completedAt: new Date().toISOString(),
+      }));
     }
   });
 
@@ -222,12 +250,33 @@ export function createIdentityServer() {
     const settings = normalizeSettings(payload.settings);
 
     try {
-      const result = await runHrmIdentityTwin({ caseRecord, accessMode: payload.accessMode ?? 'public_analysis', settings });
-      storeRun(result.runMetadata.runId, caseRecord, result);
-      return res.json(markStaleness(result, caseRecord.id, result.analysisSnapshot.caseStateHash));
+      const outcome = await runTwinBAnalysis({ caseRecord, accessMode: payload.accessMode ?? 'public_analysis', settings });
+      if (!outcome.bundle) {
+        return res.status(200).json(buildFailureResponse(
+          outcome.failureMessage ?? 'Live analysis could not be completed. No case conclusions were generated.',
+          outcome.executionStatus,
+        ));
+      }
+
+      storeRun(outcome.bundle.runMetadata.runId, caseRecord, outcome.bundle);
+      return res.json({
+        executionStatus: outcome.executionStatus,
+        bundle: markStaleness(outcome.bundle, caseRecord.id, outcome.bundle.runMetadata.caseStateHash),
+      });
     } catch (error) {
       logger.error({ error }, 'identity run-hrm failed');
-      return res.status(500).json({ error: 'HRM twin execution failed.' });
+      return res.status(500).json(buildFailureResponse('Live analysis could not be completed. No case conclusions were generated.', {
+        requestedMode: settings.fixtureMode ? 'fixture' : 'live',
+        actualMode: 'failed',
+        liveAttempted: !settings.fixtureMode,
+        liveSucceeded: false,
+        fallbackAllowed: settings.fixtureMode,
+        fallbackUsed: false,
+        failureCode: error instanceof Error ? error.name : 'hrm_failed',
+        failureMessage: error instanceof Error ? error.message : 'Live analysis could not be completed. No case conclusions were generated.',
+        startedAt: new Date().toISOString(),
+        completedAt: new Date().toISOString(),
+      }));
     }
   });
 
@@ -241,15 +290,64 @@ export function createIdentityServer() {
     const settings = normalizeSettings(payload.settings);
 
     try {
-      const bundle = await runTwinBundle({ caseRecord, accessMode: payload.accessMode ?? 'public_analysis', settings });
+      const [baselineOutcome, hrmOutcome] = await Promise.all([
+        runTwinADirectAnalysis({ caseRecord, accessMode: payload.accessMode ?? 'public_analysis', settings }),
+        runTwinBAnalysis({ caseRecord, accessMode: payload.accessMode ?? 'public_analysis', settings }),
+      ]);
+
+      if (!baselineOutcome.bundle || !hrmOutcome.bundle) {
+        const failureOutcome = baselineOutcome.bundle ? hrmOutcome : baselineOutcome;
+        return res.status(200).json(buildFailureResponse(
+          failureOutcome.failureMessage ?? 'Live analysis could not be completed. No case conclusions were generated.',
+          failureOutcome.executionStatus,
+        ));
+      }
+
+      const bundle = {
+        runId: `${baselineOutcome.bundle.runMetadata.runId}:${hrmOutcome.bundle.runMetadata.runId}`,
+        caseStateHash: baselineOutcome.bundle.runMetadata.caseStateHash,
+        snapshot: baselineOutcome.bundle.analysisSnapshot,
+        baseline: baselineOutcome.bundle,
+        hrm: hrmOutcome.bundle,
+        comparison: compareTwinResults(baselineOutcome.bundle, hrmOutcome.bundle),
+        mode: baselineOutcome.executionStatus.actualMode === 'live' && hrmOutcome.executionStatus.actualMode === 'live' ? 'live' : 'fixture',
+      } as IdentityTwinRunBundle;
+
       storeRun(bundle.runId, caseRecord, bundle);
       storeRun(bundle.baseline.runMetadata.runId, caseRecord, bundle.baseline);
       storeRun(bundle.hrm.runMetadata.runId, caseRecord, bundle.hrm);
 
-      return res.json(markStaleness(bundle, caseRecord.id, bundle.caseStateHash));
+      const actualMode = baselineOutcome.executionStatus.actualMode === 'live' && hrmOutcome.executionStatus.actualMode === 'live'
+        ? 'live'
+        : 'fixture';
+
+      return res.json({
+        executionStatus: {
+          requestedMode: settings.fixtureMode ? 'fixture' : 'live',
+          actualMode,
+          liveAttempted: !settings.fixtureMode,
+          liveSucceeded: actualMode === 'live',
+          fallbackAllowed: settings.fixtureMode,
+          fallbackUsed: false,
+          startedAt: baselineOutcome.executionStatus.startedAt,
+          completedAt: new Date().toISOString(),
+        },
+        bundle: markStaleness(bundle, caseRecord.id, bundle.caseStateHash),
+      });
     } catch (error) {
       logger.error({ error }, 'identity run-twins failed');
-      return res.status(500).json({ error: 'Twin execution failed.' });
+      return res.status(500).json(buildFailureResponse('Live analysis could not be completed. No case conclusions were generated.', {
+        requestedMode: settings.fixtureMode ? 'fixture' : 'live',
+        actualMode: 'failed',
+        liveAttempted: !settings.fixtureMode,
+        liveSucceeded: false,
+        fallbackAllowed: settings.fixtureMode,
+        fallbackUsed: false,
+        failureCode: error instanceof Error ? error.name : 'twins_failed',
+        failureMessage: error instanceof Error ? error.message : 'Live analysis could not be completed. No case conclusions were generated.',
+        startedAt: new Date().toISOString(),
+        completedAt: new Date().toISOString(),
+      }));
     }
   });
 

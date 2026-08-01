@@ -5,6 +5,7 @@ import type { AccessMode, IdentityCandidate, IdentityEvidenceItem, IdentitySearc
 import type {
   AnalyticalHypothesis,
   AnalysisInputSnapshot,
+  AnalysisExecutionStatus,
   ContradictionFinding,
   EvidenceDependencyAudit,
   IdentityActionPriority,
@@ -22,8 +23,16 @@ import type {
   IdentityRecordSearchStrategy,
   IdentityTwinComparison,
   IdentityTwinResult,
+  IdentityTwinRunResponse,
+  SemanticProposalBundle,
+  SemanticProfileProposal,
+  SemanticCandidateProposal,
+  SemanticActionProposal,
+  SemanticInformationGapProposal,
+  SemanticContradictionProposal,
+  SemanticHypothesisProposal,
 } from '../types/identityAnalysis';
-import { baselineTwinPayloadSchema, mechanismProposalSchema, twinResultSchema } from './identitySchemas';
+import { analysisExecutionStatusSchema, baselineTwinPayloadSchema, mechanismProposalSchema, semanticProposalBundleSchema, twinResultSchema } from './identitySchemas';
 import { baselineIdentityPrompt } from './prompts/baselineIdentityPrompt';
 import { buildAnalysisSnapshot, hashIdentityState, normalizeIdentityCase } from './identityNormalization';
 import { generateGeminiJson, hasGeminiConfiguration } from './geminiClient';
@@ -45,6 +54,12 @@ export interface IdentityTwinRunBundle {
   mode: 'live' | 'fixture';
 }
 
+export interface IdentityTwinRunOutcome {
+  executionStatus: AnalysisExecutionStatus;
+  bundle?: IdentityTwinResult;
+  failureMessage?: string;
+}
+
 function clamp(value: number, minimum = 0, maximum = 1): number {
   return Math.max(minimum, Math.min(maximum, value));
 }
@@ -62,6 +77,142 @@ function average(values: number[]): number {
 
 function uniqueSorted(values: string[]): string[] {
   return [...new Set(values)].filter(Boolean).sort();
+}
+
+function buildExecutionStatus(input: {
+  requestedMode: 'live' | 'fixture';
+  actualMode: 'live' | 'fixture' | 'failed';
+  liveAttempted: boolean;
+  liveSucceeded: boolean;
+  fallbackAllowed: boolean;
+  fallbackUsed: boolean;
+  startedAt: string;
+  failureCode?: string;
+  failureMessage?: string;
+}): AnalysisExecutionStatus {
+  return analysisExecutionStatusSchema.parse({
+    ...input,
+    completedAt: new Date().toISOString(),
+  }) as AnalysisExecutionStatus;
+}
+
+function mapSemanticProposal(proposal: {
+  proposalId: string;
+  statement: string;
+  evidenceIds: string[];
+  contradictingEvidenceIds: string[];
+  unknownEvidenceIds: string[];
+  assumptions: string[];
+  confidenceCategory: 'weak' | 'moderate' | 'strong' | 'blocked_by_missing_data';
+  test: string;
+  whatWouldWeakenIt: string;
+  whatItCannotEstablish: string;
+}): SemanticProfileProposal {
+  return {
+    proposalId: proposal.proposalId,
+    statement: proposal.statement,
+    evidenceIds: proposal.evidenceIds,
+    contradictingEvidenceIds: proposal.contradictingEvidenceIds,
+    unknownEvidenceIds: proposal.unknownEvidenceIds,
+    assumptions: proposal.assumptions,
+    confidenceCategory: proposal.confidenceCategory,
+    test: proposal.test,
+    whatWouldWeakenIt: proposal.whatWouldWeakenIt,
+    whatItCannotEstablish: proposal.whatItCannotEstablish,
+  };
+}
+
+function buildDeterministicSemanticProposalBundle(state: IdentityAnalysisState): SemanticProposalBundle {
+  const profile: SemanticProfileProposal = mapSemanticProposal({
+    proposalId: 'sem_profile_region',
+    statement: 'A regional records-first profile remains the most actionable starting point.',
+    evidenceIds: state.normalizedEvidence.map((item) => item.id).slice(0, 2),
+    contradictingEvidenceIds: [],
+    unknownEvidenceIds: state.normalizedUnknowns.map((item) => item.id).slice(0, 2),
+    assumptions: ['The public record remains incomplete.'],
+    confidenceCategory: 'moderate',
+    test: 'Search adjacent jurisdictions and compare against entered records.',
+    whatWouldWeakenIt: 'A confirmed long-distance travel record or an out-of-area identity link.',
+    whatItCannotEstablish: 'Identity itself.',
+  });
+
+  const candidate: SemanticCandidateProposal = mapSemanticProposal({
+    proposalId: 'sem_candidate_set',
+    statement: 'Any entered candidate should be treated as comparison data, not an assumed match.',
+    evidenceIds: state.normalizedCandidateRecords.map((candidateRecord) => candidateRecord.id),
+    contradictingEvidenceIds: [],
+    unknownEvidenceIds: state.normalizedUnknowns.map((item) => item.id).slice(0, 3),
+    assumptions: ['Candidates are incomplete and require validation.'],
+    confidenceCategory: 'weak',
+    test: 'Verify records, exclusions, and forensic availability before ranking a candidate highly.',
+    whatWouldWeakenIt: 'A completed exclusion or mismatch.',
+    whatItCannotEstablish: 'That a candidate is the woman.',
+  });
+
+  const action: SemanticActionProposal = mapSemanticProposal({
+    proposalId: 'sem_action_dna',
+    statement: 'DNA availability is the highest-value gate if any biological material exists.',
+    evidenceIds: ['E_CASE_FACTS'],
+    contradictingEvidenceIds: [],
+    unknownEvidenceIds: ['U_DNA'],
+    assumptions: ['A usable biological sample may exist.'],
+    confidenceCategory: 'moderate',
+    test: 'Confirm specimen status with the laboratory or medical examiner record.',
+    whatWouldWeakenIt: 'No retrievable biological material.',
+    whatItCannotEstablish: 'A completed identity determination without comparison context.',
+  });
+
+  const gap: SemanticInformationGapProposal = mapSemanticProposal({
+    proposalId: 'sem_gap_coverage',
+    statement: 'Record coverage completeness remains unknown.',
+    evidenceIds: ['E_CASE_FACTS'],
+    contradictingEvidenceIds: [],
+    unknownEvidenceIds: ['U_DNA', 'U_DENTAL'],
+    assumptions: ['Repository coverage has not been fully documented.'],
+    confidenceCategory: 'blocked_by_missing_data',
+    test: 'Document which jurisdictions and repositories were searched.',
+    whatWouldWeakenIt: 'A complete coverage audit.',
+    whatItCannotEstablish: 'That a case is solved.',
+  });
+
+  const contradiction: SemanticContradictionProposal = mapSemanticProposal({
+    proposalId: 'sem_contradiction_duplicate',
+    statement: 'Repeated reporting should not be treated as independent confirmation.',
+    evidenceIds: state.evidenceDependencyAudits.map((audit) => audit.evidenceId),
+    contradictingEvidenceIds: state.evidenceDependencyAudits.flatMap((audit) => audit.duplicatedBy),
+    unknownEvidenceIds: [],
+    assumptions: ['The independence groups were normalized correctly.'],
+    confidenceCategory: 'strong',
+    test: 'Deduplicate repeated source lineage before ranking evidence.',
+    whatWouldWeakenIt: 'Verified independent provenance for each source.',
+    whatItCannotEstablish: 'That duplicate reporting is a match.',
+  });
+
+  const hypothesis: SemanticHypothesisProposal = mapSemanticProposal({
+    proposalId: 'sem_hypothesis_public_brief',
+    statement: 'A guarded public brief focused on the clothing set may generate the most useful non-forensic leads.',
+    evidenceIds: ['E_CLOTHING', 'E_CASE_FACTS'],
+    contradictingEvidenceIds: [],
+    unknownEvidenceIds: ['U_DNA'],
+    assumptions: ['The brief can be released through an authorized channel.'],
+    confidenceCategory: 'moderate',
+    test: 'Release an approved public recognition brief and review credible tips.',
+    whatWouldWeakenIt: 'No useful tips or a higher-value forensic path.',
+    whatItCannotEstablish: 'Identity.',
+  });
+
+  const semanticBundle = {
+    proposedProfiles: [profile],
+    proposedCandidateAssessments: [candidate],
+    proposedActions: [action],
+    proposedInformationGaps: [gap],
+    proposedContradictions: [contradiction],
+    proposedHypotheses: [hypothesis],
+    rejectedUnsupportedIdeas: ['Identity declaration', 'Unverified DNA match', 'Unverified suspect accusation'],
+    limitations: ['Deterministic fixture semantic proposals are used only for demonstration mode.'],
+  } as any;
+
+  return semanticProposalBundleSchema.parse(semanticBundle) as SemanticProposalBundle;
 }
 
 function buildCaseUnderstanding(state: IdentityAnalysisState, tone: 'baseline' | 'hrm'): IdentityCaseUnderstanding {
@@ -1543,7 +1694,9 @@ function buildTunableResult(
     recommendedNextAction: IdentityRecommendedAction;
     limitations: string[];
     humanReviewRequired: true;
+    semanticProposalBundle?: SemanticProposalBundle;
   }) => IdentityTwinResult,
+  semanticProposalBundle?: SemanticProposalBundle,
 ): IdentityTwinResult {
   const caseUnderstanding = buildCaseUnderstanding(state, tone);
   const profiles = buildProfiles(state, tone);
@@ -1591,6 +1744,7 @@ function buildTunableResult(
     recommendedNextAction,
     limitations,
     humanReviewRequired: true,
+    semanticProposalBundle: semanticProposalBundle ?? (state.normalizedUnknowns.length > 0 ? buildDeterministicSemanticProposalBundle(state) : undefined),
   });
 }
 
@@ -1645,10 +1799,22 @@ async function runBaselineLive(state: IdentityAnalysisState, runId: string, star
       outreachActions: state.normalizedOutreachActions,
       reconstructionQuestions: state.normalizedReconstructionQuestions,
       unknowns: state.normalizedUnknowns,
+      resolvedUnknowns: state.normalizedUnknowns.filter((unknown) => unknown.currentStatus === 'resolved'),
+      unresolvedUnknowns: state.normalizedUnknowns.filter((unknown) => unknown.currentStatus !== 'resolved'),
+      priorActions: state.humanReviewDecisions,
+      completedSearches: state.recordSearchCoverage,
+      knownExclusions: state.normalizedCandidateRecords.filter((candidate) => candidate.disposition.includes('excluded')).map((candidate) => candidate.id),
+      forensicTestAvailability: state.normalizedActions.map((action) => ({
+        actionId: action.id,
+        availability: action.availability,
+        category: action.category,
+      })),
       provenance: state.normalizedProvenance,
       coverageMetrics: state.coverageMetrics,
       recordSearchCoverage: state.recordSearchCoverage,
       evidenceDependencyAudits: state.evidenceDependencyAudits,
+      guardrails: state.caseRecord.guardrails,
+      userSettings: state.settings,
       caseStateHash: state.caseStateHash,
     }, null, 2),
   ].join('\n');
@@ -1739,6 +1905,7 @@ function runHrmFixture(state: IdentityAnalysisState, runId: string, startedAt: s
       ...aggregate.warnings,
     ]),
     humanReviewRequired: true as const,
+    semanticProposalBundle: buildDeterministicSemanticProposalBundle(state),
   };
   const result = finalizeResult(state, runId, startedAt, 'twin_b_hrm', 'fixture', 0, payload as Omit<IdentityTwinResult, 'runMetadata' | 'analysisSnapshot'>);
   return {
@@ -1774,41 +1941,255 @@ async function runHrmLiveNarrative(state: IdentityAnalysisState, result: Identit
   }
 }
 
-export async function runBaselineIdentityTwin(input: TwinEngineInput): Promise<IdentityTwinResult> {
-  const state = normalizeIdentityCase({ caseRecord: input.caseRecord, accessMode: input.accessMode, settings: input.settings });
-  const runId = randomUUID();
-  const startedAt = new Date().toISOString();
+async function runTwinBSemanticProposalPassWithMetrics(state: IdentityAnalysisState, runId: string, startedAt: string) {
+  const model = process.env.GEMINI_MODEL_TWIN_B || process.env.GEMINI_MODEL_NARRATIVE || process.env.GEMINI_MODEL_BASELINE || 'gemini-2.5-flash';
+  const prompt = JSON.stringify({
+    caseId: state.caseRecord.id,
+    title: state.caseRecord.title,
+    jurisdiction: state.caseRecord.jurisdiction,
+    discovery: state.caseRecord.discovery,
+    biologicalProfile: state.caseRecord.biologicalProfile,
+    deathContext: state.caseRecord.deathContext,
+    evidence: state.normalizedEvidence,
+    candidateRecords: state.normalizedCandidateRecords,
+    searchProfiles: state.normalizedSearchProfiles,
+    actions: state.normalizedActions,
+    recordsActions: state.normalizedRecordsActions,
+    outreachActions: state.normalizedOutreachActions,
+    reconstructionQuestions: state.normalizedReconstructionQuestions,
+    unknowns: state.normalizedUnknowns,
+    provenance: state.normalizedProvenance,
+    coverageMetrics: state.coverageMetrics,
+    recordSearchCoverage: state.recordSearchCoverage,
+    evidenceDependencyAudits: state.evidenceDependencyAudits,
+    guardrails: state.caseRecord.guardrails,
+    settings: state.settings,
+    currentUserMode: state.accessMode,
+    currentActionsCompleted: state.humanReviewDecisions,
+    knownExclusions: state.normalizedCandidateRecords.filter((candidate) => candidate.disposition.includes('excluded')).map((candidate) => candidate.id),
+    forensicTestAvailability: state.normalizedActions.map((action) => ({
+      id: action.id,
+      availability: action.availability,
+      category: action.category,
+    })),
+    priorActions: state.humanReviewDecisions,
+    caseStateHash: state.caseStateHash,
+  }, null, 2);
 
-  if (!input.settings?.fixtureMode && hasGeminiConfiguration()) {
-    try {
-      return await runBaselineLive(state, runId, startedAt);
-    } catch {
-      return runBaselineFixture(state, runId, startedAt);
-    }
+  const response = await generateGeminiJson({
+    model,
+    systemInstruction: 'You are Twin B. Produce bounded semantic proposals only. Do not commit final scores or conclusions. Return JSON only.',
+    prompt,
+    schema: semanticProposalBundleSchema,
+    timeoutMs: 45_000,
+  });
+
+  return {
+    bundle: response.payload,
+    tokenUsage: response.tokenUsage,
+    model,
+    startedAt,
+    runId,
+  };
+}
+
+export async function runTwinBSemanticProposalPass(snapshot: IdentityAnalysisState): Promise<SemanticProposalBundle> {
+  if (!hasGeminiConfiguration()) {
+    return buildDeterministicSemanticProposalBundle(snapshot);
   }
 
+  const runId = randomUUID();
+  const startedAt = new Date().toISOString();
+  const response = await runTwinBSemanticProposalPassWithMetrics(snapshot, runId, startedAt);
+  return response.bundle as SemanticProposalBundle;
+}
+
+function runTwinAFixtureOutcome(state: IdentityAnalysisState, runId: string, startedAt: string): IdentityTwinResult {
   return runBaselineFixture(state, runId, startedAt);
 }
 
-export async function runHrmIdentityTwin(input: TwinEngineInput): Promise<IdentityTwinResult> {
+async function runTwinALiveOutcome(state: IdentityAnalysisState, runId: string, startedAt: string): Promise<IdentityTwinResult> {
+  return runBaselineLive(state, runId, startedAt);
+}
+
+export async function runTwinADirectAnalysis(input: TwinEngineInput): Promise<IdentityTwinRunOutcome> {
   const state = normalizeIdentityCase({ caseRecord: input.caseRecord, accessMode: input.accessMode, settings: input.settings });
   const runId = randomUUID();
   const startedAt = new Date().toISOString();
-  const result = runHrmFixture(state, runId, startedAt);
+  const requestedMode: 'live' | 'fixture' = input.settings?.fixtureMode ? 'fixture' : 'live';
 
-  if (!input.settings?.fixtureMode && hasGeminiConfiguration()) {
-    const narrativeExplanation = await runHrmLiveNarrative(state, result, startedAt);
+  if (requestedMode === 'fixture') {
     return {
-      ...result,
-      narrativeExplanation,
+      executionStatus: buildExecutionStatus({
+        requestedMode,
+        actualMode: 'fixture',
+        liveAttempted: false,
+        liveSucceeded: false,
+        fallbackAllowed: true,
+        fallbackUsed: false,
+        startedAt,
+      }),
+      bundle: runTwinAFixtureOutcome(state, runId, startedAt),
     };
   }
 
-  return result;
+  if (!hasGeminiConfiguration()) {
+    return {
+      executionStatus: buildExecutionStatus({
+        requestedMode,
+        actualMode: 'failed',
+        liveAttempted: true,
+        liveSucceeded: false,
+        fallbackAllowed: false,
+        fallbackUsed: false,
+        startedAt,
+        failureCode: 'gemini_not_configured',
+        failureMessage: 'Live analysis could not be completed. No case conclusions were generated.',
+      }),
+      failureMessage: 'Live analysis could not be completed. No case conclusions were generated.',
+    };
+  }
+
+  try {
+    const bundle = await runTwinALiveOutcome(state, runId, startedAt);
+    return {
+      executionStatus: buildExecutionStatus({
+        requestedMode,
+        actualMode: 'live',
+        liveAttempted: true,
+        liveSucceeded: true,
+        fallbackAllowed: false,
+        fallbackUsed: false,
+        startedAt,
+      }),
+      bundle,
+    };
+  } catch (error) {
+    return {
+      executionStatus: buildExecutionStatus({
+        requestedMode,
+        actualMode: 'failed',
+        liveAttempted: true,
+        liveSucceeded: false,
+        fallbackAllowed: false,
+        fallbackUsed: false,
+        startedAt,
+        failureCode: error instanceof Error ? error.name : 'live_analysis_failed',
+        failureMessage: 'Live analysis could not be completed. No case conclusions were generated.',
+      }),
+      failureMessage: error instanceof Error ? error.message : 'Live analysis could not be completed. No case conclusions were generated.',
+    };
+  }
+}
+
+async function runHrmLiveAnalysis(state: IdentityAnalysisState, runId: string, startedAt: string): Promise<IdentityTwinResult> {
+  const semanticResponse = await runTwinBSemanticProposalPassWithMetrics(state, runId, startedAt);
+  const fixtureResult = runHrmFixture(state, runId, startedAt);
+  const liveNarrative = await runHrmLiveNarrative(state, fixtureResult, startedAt);
+  const result = {
+    ...fixtureResult,
+    runMetadata: {
+      ...fixtureResult.runMetadata,
+      mode: 'live',
+      tokenUsage: semanticResponse.tokenUsage,
+      syntheticLabel: undefined,
+    },
+    semanticProposalBundle: semanticResponse.bundle,
+    narrativeExplanation: liveNarrative ?? fixtureResult.narrativeExplanation,
+  };
+
+  return twinResultSchema.parse(result) as IdentityTwinResult;
+}
+
+export async function runTwinBAnalysis(input: TwinEngineInput): Promise<IdentityTwinRunOutcome> {
+  const state = normalizeIdentityCase({ caseRecord: input.caseRecord, accessMode: input.accessMode, settings: input.settings });
+  const runId = randomUUID();
+  const startedAt = new Date().toISOString();
+  const requestedMode: 'live' | 'fixture' = input.settings?.fixtureMode ? 'fixture' : 'live';
+
+  if (requestedMode === 'fixture') {
+    return {
+      executionStatus: buildExecutionStatus({
+        requestedMode,
+        actualMode: 'fixture',
+        liveAttempted: false,
+        liveSucceeded: false,
+        fallbackAllowed: true,
+        fallbackUsed: false,
+        startedAt,
+      }),
+      bundle: runHrmFixture(state, runId, startedAt),
+    };
+  }
+
+  if (!hasGeminiConfiguration()) {
+    return {
+      executionStatus: buildExecutionStatus({
+        requestedMode,
+        actualMode: 'failed',
+        liveAttempted: true,
+        liveSucceeded: false,
+        fallbackAllowed: false,
+        fallbackUsed: false,
+        startedAt,
+        failureCode: 'gemini_not_configured',
+        failureMessage: 'Live analysis could not be completed. No case conclusions were generated.',
+      }),
+      failureMessage: 'Live analysis could not be completed. No case conclusions were generated.',
+    };
+  }
+
+  try {
+    const bundle = await runHrmLiveAnalysis(state, runId, startedAt);
+    return {
+      executionStatus: buildExecutionStatus({
+        requestedMode,
+        actualMode: 'live',
+        liveAttempted: true,
+        liveSucceeded: true,
+        fallbackAllowed: false,
+        fallbackUsed: false,
+        startedAt,
+      }),
+      bundle,
+    };
+  } catch (error) {
+    return {
+      executionStatus: buildExecutionStatus({
+        requestedMode,
+        actualMode: 'failed',
+        liveAttempted: true,
+        liveSucceeded: false,
+        fallbackAllowed: false,
+        fallbackUsed: false,
+        startedAt,
+        failureCode: error instanceof Error ? error.name : 'live_analysis_failed',
+        failureMessage: 'Live analysis could not be completed. No case conclusions were generated.',
+      }),
+      failureMessage: error instanceof Error ? error.message : 'Live analysis could not be completed. No case conclusions were generated.',
+    };
+  }
+}
+
+export async function runBaselineIdentityTwin(input: TwinEngineInput): Promise<IdentityTwinResult> {
+  const outcome = await runTwinADirectAnalysis(input);
+  if (!outcome.bundle) {
+    throw new Error(outcome.failureMessage ?? 'Live analysis could not be completed. No case conclusions were generated.');
+  }
+  return outcome.bundle;
+}
+
+export async function runHrmIdentityTwin(input: TwinEngineInput): Promise<IdentityTwinResult> {
+  const outcome = await runTwinBAnalysis(input);
+  if (!outcome.bundle) {
+    throw new Error(outcome.failureMessage ?? 'Live analysis could not be completed. No case conclusions were generated.');
+  }
+  return outcome.bundle;
 }
 
 export async function runTwinBundle(input: TwinEngineInput): Promise<IdentityTwinRunBundle> {
   const state = normalizeIdentityCase({ caseRecord: input.caseRecord, accessMode: input.accessMode, settings: input.settings });
+  const runId = randomUUID();
   const bundleRunId = randomUUID();
   const baseline = await runBaselineIdentityTwin(input);
   const hrm = await runHrmIdentityTwin(input);

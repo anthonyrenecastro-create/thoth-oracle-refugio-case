@@ -209,6 +209,43 @@ export const twinComparisonSchema = z.object({
   })).default([]),
 }).strict();
 
+const semanticBaseProposalSchema = z.object({
+  proposalId: z.string().min(1),
+  statement: z.string().min(1),
+  evidenceIds: z.array(z.string().min(1)),
+  contradictingEvidenceIds: z.array(z.string().min(1)),
+  unknownEvidenceIds: z.array(z.string().min(1)),
+  assumptions: z.array(z.string().min(1)),
+  confidenceCategory: z.enum(['weak', 'moderate', 'strong', 'blocked_by_missing_data']),
+  test: z.string().min(1),
+  whatWouldWeakenIt: z.string().min(1),
+  whatItCannotEstablish: z.string().min(1),
+}).strict();
+
+export const semanticProposalBundleSchema = z.object({
+  proposedProfiles: z.array(semanticBaseProposalSchema),
+  proposedCandidateAssessments: z.array(semanticBaseProposalSchema),
+  proposedActions: z.array(semanticBaseProposalSchema),
+  proposedInformationGaps: z.array(semanticBaseProposalSchema),
+  proposedContradictions: z.array(semanticBaseProposalSchema),
+  proposedHypotheses: z.array(semanticBaseProposalSchema),
+  rejectedUnsupportedIdeas: z.array(z.string().min(1)),
+  limitations: z.array(z.string().min(1)),
+}).strict();
+
+export const analysisExecutionStatusSchema = z.object({
+  requestedMode: z.enum(['live', 'fixture']),
+  actualMode: z.enum(['live', 'fixture', 'failed']),
+  liveAttempted: z.boolean(),
+  liveSucceeded: z.boolean(),
+  fallbackAllowed: z.boolean(),
+  fallbackUsed: z.boolean(),
+  failureCode: z.string().optional(),
+  failureMessage: z.string().optional(),
+  startedAt: z.string().min(1),
+  completedAt: z.string().optional(),
+}).strict();
+
 export const twinResultSchema = z.object({
   runMetadata: z.object({
     runId: z.string().min(1),
@@ -246,6 +283,7 @@ export const twinResultSchema = z.object({
   recommendedNextAction: recommendedActionSchema,
   limitations: z.array(z.string().min(1)),
   humanReviewRequired: z.literal(true),
+  semanticProposalBundle: semanticProposalBundleSchema.optional(),
   staleness: z.object({ current: z.boolean(), reason: z.string().min(1) }).optional(),
   comparison: twinComparisonSchema.optional(),
 }).strict();
